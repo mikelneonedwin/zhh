@@ -1,0 +1,5 @@
+/zhh
+*.exe
+*.test
+*.out
+/tmp/
