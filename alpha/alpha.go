@@ -317,7 +317,7 @@ func Run(target, command string) {
 	}
 
 	if command != "" {
-		runSingleCommand(alpha, command)
+		RunSingleCommand(alpha, command)
 		return
 	}
 
@@ -328,7 +328,7 @@ func RunInteractive(alpha *Alpha) {
 	runInteractive(alpha)
 }
 
-func runSingleCommand(alpha *Alpha, command string) {
+func RunSingleCommand(alpha *Alpha, command string) {
 	session := alpha.ActiveSession()
 	if session == nil {
 		log.Fatalf("No active session")

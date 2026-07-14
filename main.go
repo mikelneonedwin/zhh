@@ -31,7 +31,8 @@ func main() {
 		beta.Run(port)
 
 	case "twin", "t":
-		runTwin(port)
+		command, _ := parseAlphaArgs(args[1:])
+		runTwin(port, command)
 
 	default:
 		fmt.Fprintf(os.Stderr, "Usage: zhh [alpha|a] [target] [- command]\n")
@@ -41,7 +42,7 @@ func main() {
 	}
 }
 
-func runTwin(port int) {
+func runTwin(port int, command string) {
 	go beta.Run(port)
 	time.Sleep(500 * time.Millisecond)
 
@@ -60,6 +61,11 @@ func runTwin(port int) {
 	}
 
 	a.AddSession(conn, identMsg, 1)
+
+	if command != "" {
+		alpha.RunSingleCommand(a, command)
+		return
+	}
 
 	alpha.RunInteractive(a)
 }
