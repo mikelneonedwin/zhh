@@ -18,15 +18,16 @@ import (
 )
 
 type BetaSession struct {
-	ID       int
-	Octet    int
-	Conn     net.Conn
-	Hostname string
-	OS       string
-	Shell    string
-	Cwd      string
-	Shells   []string
-	mu       sync.Mutex
+	ID         int
+	Octet      int
+	Conn       net.Conn
+	Hostname   string
+	OS         string
+	Shell      string
+	Cwd        string
+	Shells     []string
+	shellStack []string
+	mu         sync.Mutex
 }
 
 func (s *BetaSession) Send(msg *protocol.Message) error {
@@ -108,19 +109,21 @@ func (a *Alpha) AddSession(conn net.Conn, identMsg *protocol.Message, octet int)
 		json.Unmarshal(identMsg.Payload, &ident)
 	}
 
-	session := &BetaSession{
-		ID:       a.nextID,
-		Octet:    ident.Octet,
-		Conn:     conn,
-		Hostname: ident.Hostname,
-		OS:       ident.OS,
-		Shell:    "?",
-		Cwd:      "/",
-		Shells:   ident.Shells,
+	defaultShell := "?"
+	if len(ident.Shells) > 0 {
+		defaultShell = ident.Shells[0]
 	}
 
-	if len(ident.Shells) > 0 {
-		session.Shell = ident.Shells[0]
+	session := &BetaSession{
+		ID:         a.nextID,
+		Octet:      ident.Octet,
+		Conn:       conn,
+		Hostname:   ident.Hostname,
+		OS:         ident.OS,
+		Shell:      defaultShell,
+		Cwd:        "/",
+		Shells:     ident.Shells,
+		shellStack: []string{defaultShell},
 	}
 
 	a.mu.Lock()
@@ -410,6 +413,16 @@ func runInteractive(alpha *Alpha) {
 			continue
 		}
 
+		if line == "exit" {
+			if alpha.handleShellExit(session) {
+				session = alpha.ActiveSession()
+				if session == nil {
+					return
+				}
+			}
+			continue
+		}
+
 		if err := alpha.executePipeline(line); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		}
@@ -584,6 +597,7 @@ func handleShellCommand(session *BetaSession, line string) error {
 		if p.Code == 0 {
 			session.mu.Lock()
 			session.Shell = shellName
+			session.shellStack = append(session.shellStack, shellName)
 			session.mu.Unlock()
 			fmt.Printf("Switched to shell: %s\n", shellName)
 		}
@@ -593,6 +607,37 @@ func handleShellCommand(session *BetaSession, line string) error {
 		return fmt.Errorf("shell switch failed: %s", p.Message)
 	}
 	return nil
+}
+
+func (a *Alpha) handleShellExit(session *BetaSession) bool {
+	session.mu.Lock()
+	stack := session.shellStack
+	if len(stack) <= 1 {
+		session.mu.Unlock()
+		fmt.Printf("  Exiting last shell on %s — disconnecting.\n", session.Hostname)
+		a.RemoveSession(session.ID)
+		return true
+	}
+
+	stack = stack[:len(stack)-1]
+	prevShell := stack[len(stack)-1]
+	session.shellStack = stack
+	session.Shell = prevShell
+	session.mu.Unlock()
+
+	fmt.Printf("  Returning to %s\n", prevShell)
+
+	session.Send(protocol.NewMessage(protocol.MsgShellSwitch, &protocol.ShellSwitchPayload{
+		Shell: prevShell,
+	}))
+	msg, _ := session.Read()
+	if msg != nil && msg.Type == protocol.MsgError {
+		var e protocol.ErrorPayload
+		json.Unmarshal(msg.Payload, &e)
+		fmt.Fprintf(os.Stderr, "  Shell switch back to %s failed: %s\n", prevShell, e.Message)
+	}
+
+	return false
 }
 
 func handleHelp() error {
@@ -610,6 +655,7 @@ func handleHelp() error {
 	fmt.Println("  Shell commands:")
 	fmt.Println("    #                 List available shells on beta")
 	fmt.Println("    #bash / #cmd      Switch beta's active shell")
+	fmt.Println("    exit              Pop current shell (disconnects from innermost shell)")
 	fmt.Println()
 	fmt.Println("  Pipeline: use | to chain, $prefix for device-specific stage")
 	fmt.Println("    $   alone runs stage on alpha (local)")
