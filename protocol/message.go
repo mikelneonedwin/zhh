@@ -38,6 +38,7 @@ type IdentifyPayload struct {
 	Shells   []string `json:"shells"`
 	Octet    int      `json:"octet"`
 	IP       string   `json:"ip"`
+	Cwd      string   `json:"cwd"`
 }
 
 type ExecPayload struct {

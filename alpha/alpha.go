@@ -114,6 +114,10 @@ func (a *Alpha) AddSession(conn net.Conn, identMsg *protocol.Message, octet int)
 		defaultShell = ident.Shells[0]
 	}
 
+	initCwd := ident.Cwd
+	if initCwd == "" {
+		initCwd = "/"
+	}
 	session := &BetaSession{
 		ID:         a.nextID,
 		Octet:      ident.Octet,
@@ -121,7 +125,7 @@ func (a *Alpha) AddSession(conn net.Conn, identMsg *protocol.Message, octet int)
 		Hostname:   ident.Hostname,
 		OS:         ident.OS,
 		Shell:      defaultShell,
-		Cwd:        "/",
+		Cwd:        initCwd,
 		Shells:     ident.Shells,
 		shellStack: []string{defaultShell},
 	}

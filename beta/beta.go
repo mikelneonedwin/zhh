@@ -102,6 +102,7 @@ func handleConnection(conn net.Conn, hostname string, octet int) {
 		Shells:   session.Shells,
 		Octet:    octet,
 		IP:       conn.LocalAddr().String(),
+		Cwd:      session.GetCwd(),
 	})
 	if err := protocol.WriteMessage(conn, ident); err != nil {
 		log.Printf("Write identify: %v", err)
