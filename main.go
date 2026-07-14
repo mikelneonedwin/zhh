@@ -31,7 +31,7 @@ func main() {
 		beta.Run(port)
 
 	case "twin", "t":
-		command, _ := parseAlphaArgs(args[1:])
+		_, command := parseAlphaArgs(args[1:])
 		runTwin(port, command)
 
 	default:
