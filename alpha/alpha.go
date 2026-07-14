@@ -287,13 +287,17 @@ func Run(target, command string) {
 	}
 
 	for _, beta := range betas {
-		log.Printf("Found beta: %s at %s:%d (octet %d)", beta.Hostname, beta.IP, beta.Port, beta.Octet)
+		// Compute octet from the actual IP we connected to, not the beta's self-report
+		connOctet := 0
+		if parts := strings.Split(beta.IP, "."); len(parts) == 4 {
+			connOctet, _ = strconv.Atoi(parts[3])
+		}
+		log.Printf("Found beta: %s at %s:%d (octet %d)", beta.Hostname, beta.IP, beta.Port, connOctet)
 		conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", beta.IP, beta.Port), 5*time.Second)
 		if err != nil {
 			log.Printf("  Connect failed: %v", err)
 			continue
 		}
-		// Read identify message
 		identMsg, err := protocol.ReadMessage(conn)
 		if err != nil {
 			log.Printf("  Identify read failed: %v", err)
@@ -304,7 +308,7 @@ func Run(target, command string) {
 		if identMsg.Payload != nil {
 			json.Unmarshal(identMsg.Payload, &ident)
 		}
-		alpha.AddSession(conn, identMsg, beta.Octet)
+		alpha.AddSession(conn, identMsg, connOctet)
 		log.Printf("  Connected: %s (%s)", ident.Hostname, ident.OS)
 	}
 
@@ -435,7 +439,11 @@ func handleMetaCommand(alpha *Alpha, line string) error {
 
 	switch cmd {
 	case "@switch":
-		return handleSwitch(alpha)
+		switchTarget := ""
+		if len(parts) > 1 {
+			switchTarget = parts[1]
+		}
+		return handleSwitch(alpha, switchTarget)
 	case "@whoami":
 		return handleWhoami(alpha)
 	case "@cp", "@copy":
@@ -466,11 +474,15 @@ func handleMetaCommand(alpha *Alpha, line string) error {
 	return nil
 }
 
-func handleSwitch(alpha *Alpha) error {
+func handleSwitch(alpha *Alpha, target string) error {
 	sessions := alpha.SessionList()
 	if len(sessions) == 0 {
 		fmt.Println("No connected betas.")
 		return nil
+	}
+
+	if target != "" {
+		return switchToTarget(alpha, target)
 	}
 
 	active := alpha.ActiveSession()
@@ -496,21 +508,22 @@ func handleSwitch(alpha *Alpha) error {
 		return nil
 	}
 
-	num, err := strconv.Atoi(line)
-	if err != nil {
-		return fmt.Errorf("invalid number: %s", line)
-	}
+	return switchToTarget(alpha, line)
+}
 
-	if num == 1 {
+func switchToTarget(alpha *Alpha, spec string) error {
+	if spec == "1" {
 		fmt.Println("Cannot switch to alpha (local). Use @cp/@move to transfer files.")
 		return nil
 	}
 
-	if alpha.SetActive(num) {
-		fmt.Printf("Switched to beta %d\n", num)
-	} else {
-		return fmt.Errorf("no beta with ID %d", num)
+	session, err := alpha.ResolveDevice(spec)
+	if err != nil {
+		return err
 	}
+
+	alpha.SetActive(session.ID)
+	fmt.Printf("Switched to beta %d  (%s)\n", session.ID, session.Hostname)
 	return nil
 }
 
@@ -643,7 +656,9 @@ func (a *Alpha) handleShellExit(session *BetaSession) bool {
 func handleHelp() error {
 	fmt.Println()
 	fmt.Println("  zhh commands:")
-	fmt.Println("    @switch           List and switch between connected betas")
+	fmt.Println("    @switch           List connected betas")
+	fmt.Println("    @switch 2         Switch to beta with ID 2 (or octet 2)")
+	fmt.Println("    @switch .2        Switch to beta with octet 2")
 	fmt.Println("    @whoami           Show active beta system information")
 	fmt.Println("    @cp <src> <dst>   Copy file between devices")
 	fmt.Println("    @copy <src> <dst> Alias for @cp")
