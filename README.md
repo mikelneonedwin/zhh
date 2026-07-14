@@ -25,13 +25,13 @@ zhh a 42 - rmdir /s /q \mydir
 on the network via mDNS. **Alpha** (controller) discovers betas automatically
 and gives you an interactive shell.
 
-## Addressing
+## Device Addressing
 
-| Identifier | Resolves to |
-|------------|-------------|
+| Syntax | Resolves to |
+|--------|-------------|
 | `alpha` / `a` / `1` | The controller (your machine) |
 | `beta` / `b` / `2` | First connected beta |
-| `3`, `4`, … | Nth beta by connection order |
+| `3`, `4`, ... | Nth beta by connection order |
 | `42`, `123` | Beta whose IP ends with that octet |
 | `.42` | Explicit octet lookup |
 
@@ -39,48 +39,69 @@ and gives you an interactive shell.
 
 | Command | Description |
 |---------|-------------|
-| `@switch` | List connected betas and switch active one |
-| `@cp a#/src b#/dst` | Copy file between devices |
-| `@move a#/src b#/dst` | Move file between devices |
+| `@switch` | List connected betas |
+| `@switch 2` | Switch to beta with ID 2 (or octet 2) |
+| `@switch .2` | Switch to beta with octet 2 |
+| `@cp <src> <dst>` | Copy file between devices |
+| `@mv <src> <dst>` | Move file between devices |
 | `@whoami` | Show active beta system info |
 | `@help` | Show available commands |
 | `@exit` / `@quit` | Exit alpha mode |
 | `#` | List available shells on active beta |
 | `#bash` / `#cmd` | Switch active shell on beta |
+| `exit` | Pop back to previous shell (disconnects from last) |
 
 ## Cross-Machine Pipelines
 
-Use `$$` to pipe a command stage through your local machine:
+Use `$` to route a pipeline stage through a specific device:
 
 ```bash
-ipconfig | $$grep 192 | clip
+ipconfig | $2 grep "192" | clip
 ```
 
-This runs `ipconfig` on the beta (Windows), pipes through `grep 192` on the
-alpha (Linux/macOS), then sends the result to `clip` on the original beta.
+This runs `ipconfig` on the active beta, pipes through `grep 192` on beta ID 2,
+then sends the result to `clip` on the active beta.
+
+Use `$` alone to run a stage on the alpha (controller):
+
+```bash
+ipconfig | $grep 192 | clip
+```
+
+Each stage gets a unique colour based on its target device, so you can
+visually track which commands run where.
 
 ## File Transfer Syntax
 
 ```
-@cp <source> <dest>
-@move <source> <dest>
+@cp [src_dev] <src_path> [dst_dev] <dst_path>
+@mv [src_dev] <src_path> [dst_dev] <dst_path>
 ```
 
-Each path is `device#/path/on/device`. For example:
+Device defaults to the active beta if omitted. Device is specified with `$N` or
+`$.N` before the path:
 
 ```bash
-@cp alpha#./local.txt beta#C:\remote\file.txt    # upload
-@cp beta#C:\remote\file.txt alpha#./local.txt    # download
-@cp 123#~/doc.txt 124#~/doc.txt                  # beta to beta
+@cp ./local.txt /remote/path              # active beta to active beta
+@cp ./local.txt $2 /remote/path           # alpha to beta ID 2
+@cp $2 /remote/file ./local               # beta ID 2 to alpha
+@cp $2 /src/path $3 /dst/path             # beta ID 2 to beta ID 3
+@cp $2:/remote/file ./local               # combined $N:path in one arg
 ```
 
-Shortcuts: `2#/path` or `2:/path` for numeric ID, `.42#/path` or `.42:/path`
-for octet lookup.
+## Shell Stack (exit)
+
+Shells are tracked as a stack. `#bash` pushes bash on top, `exit` pops back:
+
+```
+default shell (bash)  →  #dash  →  #sh  →  exit  →  exit  →  exit
+                                                          disconnect
+```
 
 ## Build from Source
 
 ```bash
-git clone https://github.com/mikelneonedwin/zhh
+git clone -b develop https://github.com/mikelneonedwin/zhh
 cd zhh
 go build -o zhh .
 ```
