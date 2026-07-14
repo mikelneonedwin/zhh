@@ -2,11 +2,15 @@ package main
 
 import (
 	"fmt"
+	"log"
+	"net"
 	"os"
 	"strings"
+	"time"
 
 	"zhh/alpha"
 	"zhh/beta"
+	"zhh/protocol"
 )
 
 func main() {
@@ -26,11 +30,38 @@ func main() {
 	case "beta", "b":
 		beta.Run(port)
 
+	case "twin", "t":
+		runTwin(port)
+
 	default:
 		fmt.Fprintf(os.Stderr, "Usage: zhh [alpha|a] [target] [- command]\n")
 		fmt.Fprintf(os.Stderr, "       zhh [beta|b]               (default)\n")
+		fmt.Fprintf(os.Stderr, "       zhh [twin|t]               (local test)\n")
 		os.Exit(1)
 	}
+}
+
+func runTwin(port int) {
+	go beta.Run(port)
+	time.Sleep(500 * time.Millisecond)
+
+	a := alpha.NewAlpha()
+
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 5*time.Second)
+	if err != nil {
+		log.Fatalf("twin connect: %v", err)
+	}
+
+	log.Printf("Connected to local beta on 127.0.0.1:%d", port)
+
+	identMsg, err := protocol.ReadMessage(conn)
+	if err != nil {
+		log.Fatalf("twin identify: %v", err)
+	}
+
+	a.AddSession(conn, identMsg, 1)
+
+	alpha.RunInteractive(a)
 }
 
 func parseAlphaArgs(args []string) (target, command string) {

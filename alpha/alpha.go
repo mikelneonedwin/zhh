@@ -321,6 +321,10 @@ func Run(target, command string) {
 		return
 	}
 
+	RunInteractive(alpha)
+}
+
+func RunInteractive(alpha *Alpha) {
 	runInteractive(alpha)
 }
 
