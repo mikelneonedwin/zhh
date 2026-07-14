@@ -35,17 +35,25 @@ func parsePipeline(line string) []stage {
 
 func splitByPipe(line string) []string {
 	var parts []string
-	depth := 0
 	start := 0
+	var quote rune      // 0 = not quoted, '\'' or '"' = current quote
+	subshell := 0       // $() nesting depth
+
 	for i, c := range line {
-		switch c {
-		case '"', '\'':
-			depth++
-		case '|':
-			if depth == 0 {
-				parts = append(parts, line[start:i])
-				start = i + 1
+		switch {
+		case quote == 0 && (c == '\'' || c == '"'):
+			quote = c
+		case quote != 0 && c == quote:
+			quote = 0
+		case quote == 0 && c == '(' && i > 0 && line[i-1] == '$':
+			subshell++
+		case quote == 0 && c == ')':
+			if subshell > 0 {
+				subshell--
 			}
+		case quote == 0 && subshell == 0 && c == '|':
+			parts = append(parts, line[start:i])
+			start = i + 1
 		}
 	}
 	if start < len(line) {

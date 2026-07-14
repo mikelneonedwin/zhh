@@ -570,9 +570,6 @@ func handleShellCommand(session *BetaSession, line string) error {
 		if p.Code == 0 {
 			session.mu.Lock()
 			session.Shell = shellName
-			if p.Cwd != "" {
-				session.Cwd = p.Cwd
-			}
 			session.mu.Unlock()
 			fmt.Printf("Switched to shell: %s\n", shellName)
 		}

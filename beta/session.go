@@ -17,7 +17,10 @@ type Session struct {
 }
 
 func NewSession() *Session {
-	cwd, _ := os.Getwd()
+	cwd, _ := os.UserHomeDir()
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
 	shells := DetectShells()
 	return &Session{
 		Cwd:    cwd,
