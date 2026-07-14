@@ -7,16 +7,17 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"unicode"
 
 	"zhh/protocol"
 )
 
 type stage struct {
-	runner string // "alpha" or "beta"
+	target string // "active", "alpha", "2", ".2", etc.
 	cmd    string
 }
 
-func parsePipeline(line string) []stage {
+func parseStages(line string) []stage {
 	parts := splitByPipe(line)
 	var stages []stage
 	for _, part := range parts {
@@ -24,11 +25,7 @@ func parsePipeline(line string) []stage {
 		if part == "" {
 			continue
 		}
-		if strings.HasPrefix(part, "$$") {
-			stages = append(stages, stage{runner: "alpha", cmd: strings.TrimPrefix(part, "$$")})
-		} else {
-			stages = append(stages, stage{runner: "beta", cmd: part})
-		}
+		stages = append(stages, parseStage(part))
 	}
 	return stages
 }
@@ -36,8 +33,8 @@ func parsePipeline(line string) []stage {
 func splitByPipe(line string) []string {
 	var parts []string
 	start := 0
-	var quote rune      // 0 = not quoted, '\'' or '"' = current quote
-	subshell := 0       // $() nesting depth
+	var quote rune
+	subshell := 0
 
 	for i, c := range line {
 		switch {
@@ -62,28 +59,125 @@ func splitByPipe(line string) []string {
 	return parts
 }
 
-func executePipeline(alpha *Alpha, session *BetaSession, line string) error {
-	stages := parsePipeline(line)
+func parseStage(s string) stage {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return stage{target: "active", cmd: ""}
+	}
+
+	if !strings.HasPrefix(s, "$") {
+		return stage{target: "active", cmd: s}
+	}
+
+	rest := s[1:]
+	rest = strings.TrimSpace(rest)
+
+	if rest == "" {
+		return stage{target: "alpha", cmd: ""}
+	}
+
+	first := rest[0]
+
+	if first == '.' {
+		rest = rest[1:]
+		numStr := extractDigits(rest)
+		if numStr == "" {
+			return stage{target: "alpha", cmd: rest}
+		}
+		target := "." + numStr
+		cmd := rest[len(numStr):]
+		cmd = strings.TrimSpace(cmd)
+		cmd = strings.TrimPrefix(cmd, ":")
+		return stage{target: target, cmd: strings.TrimSpace(cmd)}
+	}
+
+	if unicode.IsDigit(rune(first)) {
+		numStr := extractDigits(rest)
+		cmd := rest[len(numStr):]
+		cmd = strings.TrimSpace(cmd)
+		cmd = strings.TrimPrefix(cmd, ":")
+		return stage{target: numStr, cmd: strings.TrimSpace(cmd)}
+	}
+
+	return stage{target: "alpha", cmd: rest}
+}
+
+func extractDigits(s string) string {
+	for i, c := range s {
+		if !unicode.IsDigit(c) {
+			return s[:i]
+		}
+	}
+	return s
+}
+
+func displayPipeline(stages []stage) {
+	for i, st := range stages {
+		if i > 0 {
+			fmt.Print(" | ")
+		}
+		color := getDeviceColor(st.target)
+		if color != "" {
+			fmt.Print(color)
+		}
+		if st.target != "" && st.target != "active" {
+			fmt.Print("$" + st.target + " ")
+		}
+		fmt.Print(st.cmd)
+		if color != "" {
+			fmt.Print(resetCode)
+		}
+	}
+	fmt.Println()
+}
+
+func (a *Alpha) executePipeline(line string) error {
+	stages := parseStages(line)
 	if len(stages) == 0 {
 		return nil
 	}
 
-	if len(stages) == 1 && stages[0].runner == "beta" {
-		return executeSimpleBeta(session, stages[0].cmd, nil)
+	if len(stages) > 1 || stages[0].target != "active" {
+		displayPipeline(stages)
+	}
+
+	type rs struct {
+		session *BetaSession
+		cmd     string
+	}
+	var resolved []rs
+
+	for _, st := range stages {
+		sess, err := a.resolveStageTarget(st.target)
+		if err != nil {
+			return err
+		}
+		resolved = append(resolved, rs{session: sess, cmd: st.cmd})
+	}
+
+	if len(resolved) == 1 {
+		rs := resolved[0]
+		if rs.session == nil {
+			out, err := runLocalCommand(rs.cmd, nil)
+			if err == nil && len(out) > 0 {
+				os.Stdout.Write(out)
+			}
+			return err
+		}
+		return executeSimpleBeta(rs.session, rs.cmd, nil)
 	}
 
 	var prevOutput []byte
-
-	for _, st := range stages {
-		if st.runner == "alpha" {
-			out, err := runLocalCommand(st.cmd, prevOutput)
+	for _, rs := range resolved {
+		if rs.session == nil {
+			out, err := runLocalCommand(rs.cmd, prevOutput)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Alpha stage error: %v\n", err)
 				return err
 			}
 			prevOutput = out
 		} else {
-			out, err := executeBetaCapture(session, st.cmd, prevOutput)
+			out, err := executeBetaCapture(rs.session, rs.cmd, prevOutput)
 			if err != nil {
 				return err
 			}
@@ -95,6 +189,17 @@ func executePipeline(alpha *Alpha, session *BetaSession, line string) error {
 		os.Stdout.Write(prevOutput)
 	}
 	return nil
+}
+
+func (a *Alpha) resolveStageTarget(target string) (*BetaSession, error) {
+	switch target {
+	case "", "active":
+		return a.ActiveSession(), nil
+	case "alpha":
+		return nil, nil
+	default:
+		return a.ResolveDevice(target)
+	}
 }
 
 func executeSimpleBeta(session *BetaSession, cmd string, stdin []byte) error {

@@ -59,6 +59,29 @@ func (s *BetaSession) ReadWithTimeout(timeout time.Duration) (*protocol.Message,
 	return protocol.ReadMessage(s.Conn)
 }
 
+var (
+	deviceColors = []string{
+		"\033[31m", "\033[32m", "\033[33m", "\033[34m",
+		"\033[35m", "\033[36m", "\033[91m", "\033[92m",
+		"\033[93m", "\033[94m", "\033[95m", "\033[96m",
+	}
+	resetCode = "\033[0m"
+)
+
+func getDeviceColor(spec string) string {
+	if spec == "" || spec == "active" {
+		return ""
+	}
+	h := 0
+	for _, c := range spec {
+		h = h*31 + int(c)
+	}
+	if h < 0 {
+		h = -h
+	}
+	return deviceColors[h%len(deviceColors)]
+}
+
 type Alpha struct {
 	sessions  map[int]*BetaSession
 	octetSess map[int]*BetaSession
@@ -232,23 +255,6 @@ func (a *Alpha) ResolveDevice(spec string) (*BetaSession, error) {
 	return nil, fmt.Errorf("unknown device: %s", spec)
 }
 
-func parseDevicePath(raw string) (deviceSpec string, path string, err error) {
-	if idx := strings.Index(raw, "#"); idx > 0 {
-		return raw[:idx], raw[idx+1:], nil
-	}
-	// Look for separator like "2:/" or ".42:/"
-	for i := 0; i < len(raw); i++ {
-		if raw[i] == ':' && i+1 < len(raw) && (raw[i+1] == '/' || raw[i+1] == '\\') {
-			spec := raw[:i]
-			if len(spec) == 1 && ((spec[0] >= 'A' && spec[0] <= 'Z') || (spec[0] >= 'a' && spec[0] <= 'z')) {
-				continue
-			}
-			return spec, raw[i+1:], nil
-		}
-	}
-	return "", "", fmt.Errorf("no device separator in %q (use # or :/)", raw)
-}
-
 func Run(target, command string) {
 	alpha := NewAlpha()
 
@@ -404,7 +410,7 @@ func runInteractive(alpha *Alpha) {
 			continue
 		}
 
-		if err := executePipeline(alpha, session, line); err != nil {
+		if err := alpha.executePipeline(line); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		}
 	}
@@ -421,14 +427,22 @@ func handleMetaCommand(alpha *Alpha, line string) error {
 		return handleWhoami(alpha)
 	case "@cp", "@copy":
 		if len(parts) < 3 {
-			return fmt.Errorf("usage: %s <source> <dest>", cmd)
+			return fmt.Errorf("usage: %s [src_dev] <src_path> [dst_dev] <dst_path>", cmd)
 		}
-		return handleFileTransfer(alpha, parts[1], parts[2], false)
+		srcDev, srcPath, dstDev, dstPath, err := parseTransferArgs(parts[1:])
+		if err != nil {
+			return err
+		}
+		return handleFileTransfer(alpha, srcDev, srcPath, dstDev, dstPath, false)
 	case "@mv", "@move":
 		if len(parts) < 3 {
-			return fmt.Errorf("usage: %s <source> <dest>", cmd)
+			return fmt.Errorf("usage: %s [src_dev] <src_path> [dst_dev] <dst_path>", cmd)
 		}
-		return handleFileTransfer(alpha, parts[1], parts[2], true)
+		srcDev, srcPath, dstDev, dstPath, err := parseTransferArgs(parts[1:])
+		if err != nil {
+			return err
+		}
+		return handleFileTransfer(alpha, srcDev, srcPath, dstDev, dstPath, true)
 	case "@help":
 		return handleHelp()
 	case "@exit", "@quit":
@@ -597,13 +611,18 @@ func handleHelp() error {
 	fmt.Println("    #                 List available shells on beta")
 	fmt.Println("    #bash / #cmd      Switch beta's active shell")
 	fmt.Println()
-	fmt.Println("  Pipeline: use | to chain, $$prefix for alpha-local stage")
-	fmt.Println("    Example: ipconfig | $$grep 192 | clip")
+	fmt.Println("  Pipeline: use | to chain, $prefix for device-specific stage")
+	fmt.Println("    $   alone runs stage on alpha (local)")
+	fmt.Println("    $N  runs stage on beta with ID N")
+	fmt.Println("    $.N runs stage on beta with octet N")
+	fmt.Println("    Example: ipconfig | $2 grep 192 | clip")
+	fmt.Println("    Example: ipconfig | $grep 2 \"192\" | $.21 clip")
 	fmt.Println()
-	fmt.Println("  File transfer path syntax: device#path or device:/path")
-	fmt.Println("    Example: @cp alpha#./file beta#C:\\dest\\file")
-	fmt.Println("    Example: @cp 2:/src 3:/dest")
-	fmt.Println("    Example: @cp .42:/file .123:/file")
+	fmt.Println("  File transfer: @cp [src_dev] <src_path> [dst_dev] <dst_path>")
+	fmt.Println("    Device defaults to active beta if omitted")
+	fmt.Println("    Example: @cp /local/file $2/remote/dir")
+	fmt.Println("    Example: @cp $2 /src $3 /dst")
+	fmt.Println("    Example: @cp /src /dst        (both on active beta)")
 	fmt.Println()
 	return nil
 }

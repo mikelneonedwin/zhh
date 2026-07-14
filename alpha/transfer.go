@@ -12,46 +12,118 @@ import (
 	"zhh/protocol"
 )
 
-func handleFileTransfer(alpha *Alpha, srcRaw, dstRaw string, move bool) error {
-	srcSpec, srcPath, err := parseDevicePath(srcRaw)
-	if err != nil {
-		return fmt.Errorf("invalid source: %w", err)
-	}
-	dstSpec, dstPath, err := parseDevicePath(dstRaw)
-	if err != nil {
-		return fmt.Errorf("invalid destination: %w", err)
-	}
-
-	srcDev, err := alpha.ResolveDevice(srcSpec)
-	if err != nil {
-		return fmt.Errorf("source device: %w", err)
-	}
-	dstDev, err := alpha.ResolveDevice(dstSpec)
-	if err != nil {
-		return fmt.Errorf("destination device: %w", err)
+func parseTransferArgs(args []string) (srcDev, srcPath, dstDev, dstPath string, err error) {
+	// Flatten combined $N:/path args
+	var flat []string
+	for _, arg := range args {
+		dev, path := splitDevicePathArg(arg)
+		flat = append(flat, dev)
+		if path != "" {
+			flat = append(flat, path)
+		}
 	}
 
-	// Normalize paths
+	switch len(flat) {
+	case 2:
+		srcPath = flat[0]
+		dstPath = flat[1]
+	case 3:
+		if strings.HasPrefix(flat[0], "$") {
+			srcDev = flat[0]
+			srcPath = flat[1]
+			dstPath = flat[2]
+		} else {
+			srcPath = flat[0]
+			dstDev = flat[1]
+			dstPath = flat[2]
+		}
+	case 4:
+		srcDev = flat[0]
+		srcPath = flat[1]
+		dstDev = flat[2]
+		dstPath = flat[3]
+	default:
+		err = fmt.Errorf("invalid arguments: got %d, need [dev] <src> [dev] <dst>", len(args))
+	}
+	return
+}
+
+func splitDevicePathArg(arg string) (dev, path string) {
+	if !strings.HasPrefix(arg, "$") {
+		return "", arg
+	}
+
+	rest := arg[1:]
+
+	if strings.HasPrefix(rest, ".") {
+		rest = rest[1:]
+		numStr := extractDigits(rest)
+		if numStr == "" {
+			return "", arg
+		}
+		dev = "$." + numStr
+		rest = rest[len(numStr):]
+	} else {
+		numStr := extractDigits(rest)
+		if numStr == "" {
+			return "", arg
+		}
+		dev = "$" + numStr
+		rest = rest[len(numStr):]
+	}
+
+	rest = strings.TrimSpace(rest)
+	rest = strings.TrimPrefix(rest, ":")
+	rest = strings.TrimSpace(rest)
+	if rest != "" {
+		path = rest
+	}
+
+	return
+}
+
+func handleFileTransfer(alpha *Alpha, srcDevSpec, srcPath, dstDevSpec, dstPath string, move bool) error {
+	var srcSession, dstSession *BetaSession
+	var err error
+
+	if srcDevSpec == "" {
+		srcSession = alpha.ActiveSession()
+	} else {
+		dev := strings.TrimPrefix(srcDevSpec, "$")
+		srcSession, err = alpha.ResolveDevice(dev)
+		if err != nil {
+			return fmt.Errorf("source device: %w", err)
+		}
+	}
+
+	if dstDevSpec == "" {
+		dstSession = alpha.ActiveSession()
+	} else {
+		dev := strings.TrimPrefix(dstDevSpec, "$")
+		dstSession, err = alpha.ResolveDevice(dev)
+		if err != nil {
+			return fmt.Errorf("destination device: %w", err)
+		}
+	}
+
 	srcPath = normalizePath(srcPath)
 	dstPath = normalizePath(dstPath)
 
-	srcIsAlpha := srcDev == nil
-	dstIsAlpha := dstDev == nil
+	srcIsAlpha := srcSession == nil
+	dstIsAlpha := dstSession == nil
+
+	if srcIsAlpha && dstIsAlpha {
+		return fmt.Errorf("local-to-local transfer not supported via @cp/@move; use OS commands")
+	}
 
 	switch {
-	case srcIsAlpha && dstIsAlpha:
-		return copyLocalToLocal(srcPath, dstPath, move)
 	case srcIsAlpha && !dstIsAlpha:
-		return pushFile(dstDev, srcPath, dstPath, move)
+		return pushFile(dstSession, srcPath, dstPath, move)
 	case !srcIsAlpha && dstIsAlpha:
-		return pullFile(srcDev, srcPath, dstPath, move)
+		return pullFile(srcSession, srcPath, dstPath, move)
 	default:
-		return relayTransfer(srcDev, dstDev, srcPath, dstPath, move)
+		return relayTransfer(srcSession, dstSession, srcPath, dstPath, move)
 	}
-}
-
-func copyLocalToLocal(src, dst string, move bool) error {
-	return fmt.Errorf("local-to-local transfer not supported via @cp/@move; use OS commands")
 }
 
 func pushFile(dst *BetaSession, localPath, remotePath string, move bool) error {
@@ -60,7 +132,7 @@ func pushFile(dst *BetaSession, localPath, remotePath string, move bool) error {
 		return fmt.Errorf("local file: %w", err)
 	}
 	if info.IsDir() {
-		return fmt.Errorf("local path is a directory; file transfer does not support directories")
+		return fmt.Errorf("local path is a directory; file transfers do not support directories")
 	}
 
 	f, err := os.Open(localPath)
@@ -184,7 +256,6 @@ func pullFile(src *BetaSession, remotePath, localPath string, move bool) error {
 	startTime := time.Now()
 	lastUpdate := startTime
 
-	// Request first chunk
 	if err := src.Send(protocol.NewMessage(protocol.MsgFilePullData, nil)); err != nil {
 		return fmt.Errorf("request data: %w", err)
 	}
@@ -211,7 +282,6 @@ func pullFile(src *BetaSession, remotePath, localPath string, move bool) error {
 					lastUpdate = time.Now()
 				}
 
-				// Request next chunk
 				if err := src.Send(protocol.NewMessage(protocol.MsgFilePullData, nil)); err != nil {
 					return fmt.Errorf("request next: %w", err)
 				}
@@ -228,7 +298,6 @@ func pullFile(src *BetaSession, remotePath, localPath string, move bool) error {
 				src.Send(protocol.NewMessage(protocol.MsgExec, &protocol.ExecPayload{
 					Cmd: fmt.Sprintf("rm %s", quotePath(remotePath)),
 				}))
-				// Drain response
 				for {
 					m, _ := src.Read()
 					if m != nil && m.Type == protocol.MsgExecDone {
@@ -257,12 +326,10 @@ func relayTransfer(src, dst *BetaSession, srcPath, dstPath string, move bool) er
 	tmpFile.Close()
 	defer os.Remove(tmpPath)
 
-	// Pull to temp
 	if err := pullFile(src, srcPath, tmpPath, false); err != nil {
 		return fmt.Errorf("pull from source: %w", err)
 	}
 
-	// Push from temp
 	if err := pushFile(dst, tmpPath, dstPath, false); err != nil {
 		return fmt.Errorf("push to destination: %w", err)
 	}
