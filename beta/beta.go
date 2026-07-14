@@ -387,25 +387,4 @@ func handleWhoami(conn net.Conn, session *Session) error {
 	}))
 }
 
-func getOSVersion() string {
-	if runtime.GOOS == "windows" {
-		return runtime.GOOS + " (unknown build)"
-	}
-	data, err := os.ReadFile("/proc/version")
-	if err != nil {
-		return runtime.GOOS
-	}
-	parts := strings.SplitN(string(data), " ", 3)
-	if len(parts) >= 2 {
-		return strings.TrimSpace(parts[0] + " " + parts[1])
-	}
-	return runtime.GOOS
-}
 
-func getStorageInfo() string {
-	return "N/A (cross-platform support pending)"
-}
-
-func getBatteryInfo() string {
-	return "N/A"
-}
