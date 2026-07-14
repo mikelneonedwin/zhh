@@ -4,16 +4,16 @@ package beta
 
 import (
 	"fmt"
-	"syscall"
+	"golang.org/x/sys/windows"
 )
 
 func getStorageInfo() string {
-	path, err := syscall.UTF16PtrFromString("C:\\")
+	path, err := windows.UTF16PtrFromString("C:\\")
 	if err != nil {
 		return "unknown"
 	}
-	var free, total, totalFree int64
-	if err := syscall.GetDiskFreeSpaceEx(path, &free, &total, &totalFree); err != nil {
+	var free, total, totalFree uint64
+	if err := windows.GetDiskFreeSpaceEx(path, &free, &total, &totalFree); err != nil {
 		return "unknown"
 	}
 	used := total - free
