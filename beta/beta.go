@@ -20,12 +20,10 @@ func Run(port int) {
 	hostname, _ := os.Hostname()
 	ips := getLocalIPs()
 	octet := 0
-	var displayIP string
 	for _, ip := range ips {
 		if strings.Count(ip, ".") == 3 {
 			parts := strings.Split(ip, ".")
 			octet, _ = strconv.Atoi(parts[len(parts)-1])
-			displayIP = ip
 			break
 		}
 	}
@@ -46,11 +44,12 @@ func Run(port int) {
 	fmt.Printf("\n  zhh beta ready\n")
 	fmt.Printf("  Hostname: %s\n", hostname)
 	fmt.Printf("  OS:       %s / %s\n", runtime.GOOS, runtime.GOARCH)
-	if displayIP != "" {
-		fmt.Printf("  IP:       %s\n", displayIP)
-		fmt.Printf("  Octet:    %d\n", octet)
-	}
 	fmt.Printf("  Port:     %d\n", port)
+	fmt.Printf("  IPs:\n")
+	for _, ip := range ips {
+		fmt.Printf("    %s\n", ip)
+	}
+	fmt.Printf("  Octet:    %d  (use on alpha: zhh a %d)\n", octet, octet)
 	fmt.Printf("  ---\n\n")
 
 	for {
