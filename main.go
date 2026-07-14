@@ -37,7 +37,7 @@ func main() {
 	default:
 		fmt.Fprintf(os.Stderr, "Usage: zhh [alpha|a] [target] [- command]\n")
 		fmt.Fprintf(os.Stderr, "       zhh [beta|b]               (default)\n")
-		fmt.Fprintf(os.Stderr, "       zhh [twin|t]               (local test)\n")
+		fmt.Fprintf(os.Stderr, "       zhh [twin|t] [- command]   (local test)\n")
 		os.Exit(1)
 	}
 }

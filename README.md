@@ -17,6 +17,12 @@ zhh alpha 42
 
 # Run a single command and exit
 zhh a 42 - rmdir /s /q \mydir
+
+# Run alpha and beta on the same machine (development / testing)
+zhh twin
+
+# One-off command via twin mode
+zhh twin - ls -la
 ```
 
 ## How It Works
@@ -24,6 +30,11 @@ zhh a 42 - rmdir /s /q \mydir
 **Beta** (default mode) listens for incoming connections and advertises itself
 on the network via mDNS. **Alpha** (controller) discovers betas automatically
 and gives you an interactive shell.
+
+**Twin mode** starts a beta server in the background and immediately connects
+an alpha client to `127.0.0.1`. It's the same protocol as a real remote session
+but runs locally — useful for testing, scripting, or when no other machines
+are available.
 
 ## Device Addressing
 
