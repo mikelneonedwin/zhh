@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -76,6 +77,12 @@ func parseStage(s string) stage {
 		return stage{target: "alpha", cmd: ""}
 	}
 
+	if ip, cmdRest, ok := parseIPPrefix(rest); ok {
+		cmd := strings.TrimSpace(cmdRest)
+		cmd = strings.TrimPrefix(cmd, ":")
+		return stage{target: ip, cmd: strings.TrimSpace(cmd)}
+	}
+
 	first := rest[0]
 
 	if first == '.' {
@@ -99,6 +106,13 @@ func parseStage(s string) stage {
 		return stage{target: numStr, cmd: strings.TrimSpace(cmd)}
 	}
 
+	if strings.HasPrefix(rest, "alpha ") {
+		cmd := strings.TrimPrefix(rest, "alpha ")
+		return stage{target: "alpha", cmd: strings.TrimSpace(cmd)}
+	} else if rest == "alpha" {
+		return stage{target: "alpha", cmd: ""}
+	}
+
 	return stage{target: "alpha", cmd: rest}
 }
 
@@ -112,33 +126,158 @@ func extractDigits(s string) string {
 }
 
 func displayPipeline(stages []stage) {
-	for i, st := range stages {
-		if i > 0 {
-			fmt.Print(" | ")
-		}
-		color := getDeviceColor(st.target)
-		if color != "" {
-			fmt.Print(color)
-		}
-		if st.target != "" && st.target != "active" {
-			fmt.Print("$" + st.target + " ")
-		}
-		fmt.Print(st.cmd)
-		if color != "" {
-			fmt.Print(resetCode)
+	// disabled as it is handled by pipelinePainter now
+}
+
+type pipelinePainter struct{}
+
+func (p *pipelinePainter) Paint(line []rune, pos int) []rune {
+	s := string(line)
+	trimmed := strings.TrimSpace(s)
+	if strings.HasPrefix(trimmed, "@cp ") || strings.HasPrefix(trimmed, "@copy ") ||
+		strings.HasPrefix(trimmed, "@mv ") || strings.HasPrefix(trimmed, "@move ") {
+		return []rune(colorizeTransferCommandLine(s))
+	}
+
+	var out []byte
+
+	start := 0
+	var quote rune
+	subshell := 0
+
+	for i, c := range s {
+		switch {
+		case quote == 0 && (c == '\'' || c == '"'):
+			quote = c
+		case quote != 0 && c == quote:
+			quote = 0
+		case quote == 0 && c == '(' && i > 0 && s[i-1] == '$':
+			subshell++
+		case quote == 0 && c == ')':
+			if subshell > 0 {
+				subshell--
+			}
+		case quote == 0 && subshell == 0 && c == '|':
+			stageStr := s[start:i]
+			out = append(out, colorizeStage(stageStr)...)
+			out = append(out, '|')
+			start = i + 1
 		}
 	}
-	fmt.Println()
+	if start < len(s) {
+		out = append(out, colorizeStage(s[start:])...)
+	}
+
+	return []rune(string(out))
+}
+
+type token struct {
+	text    string
+	start   int
+	end     int
+	isSpace bool
+}
+
+func tokenize(s string) []token {
+	var tokens []token
+	var current []rune
+	start := 0
+	inSpace := false
+
+	runes := []rune(s)
+	for i, r := range runes {
+		isSpace := (r == ' ' || r == '\t' || r == '\n' || r == '\r')
+		if i == 0 {
+			inSpace = isSpace
+		}
+		if isSpace != inSpace {
+			tokens = append(tokens, token{
+				text:    string(current),
+				start:   start,
+				end:     i,
+				isSpace: inSpace,
+			})
+			current = nil
+			start = i
+			inSpace = isSpace
+		}
+		current = append(current, r)
+	}
+	if len(current) > 0 {
+		tokens = append(tokens, token{
+			text:    string(current),
+			start:   start,
+			end:     len(runes),
+			isSpace: inSpace,
+		})
+	}
+	return tokens
+}
+
+func extractTarget(tok string) string {
+	if tok == "$" {
+		return "alpha"
+	}
+	rest := tok[1:]
+	if idx := strings.Index(rest, ":"); idx != -1 {
+		rest = rest[:idx]
+	}
+	if idx := strings.Index(rest, "/"); idx != -1 {
+		rest = rest[:idx]
+	}
+	return rest
+}
+
+func colorizeTransferCommandLine(s string) string {
+	tokens := tokenize(s)
+	var out strings.Builder
+	activeColor := ""
+
+	for _, tok := range tokens {
+		if tok.isSpace {
+			out.WriteString(tok.text)
+			continue
+		}
+
+		if strings.HasPrefix(tok.text, "$") {
+			target := extractTarget(tok.text)
+			color := getDeviceColor(target)
+			if color != "" {
+				out.WriteString(color + tok.text + resetCode)
+				if !strings.Contains(tok.text, ":") && !strings.Contains(tok.text, "/") {
+					activeColor = color
+				} else {
+					activeColor = ""
+				}
+			} else {
+				out.WriteString(tok.text)
+				activeColor = ""
+			}
+		} else {
+			if activeColor != "" {
+				out.WriteString(activeColor + tok.text + resetCode)
+				activeColor = ""
+			} else {
+				out.WriteString(tok.text)
+			}
+		}
+	}
+	return out.String()
+}
+
+func colorizeStage(stageStr string) []byte {
+	st := parseStage(stageStr)
+	color := getDeviceColor(st.target)
+	if color == "" {
+		return []byte(stageStr)
+	}
+	return []byte(color + stageStr + resetCode)
 }
 
 func (a *Alpha) executePipeline(line string) error {
 	stages := parseStages(line)
 	if len(stages) == 0 {
 		return nil
-	}
-
-	if len(stages) > 1 || stages[0].target != "active" {
-		displayPipeline(stages)
 	}
 
 	type rs struct {
@@ -158,35 +297,36 @@ func (a *Alpha) executePipeline(line string) error {
 	if len(resolved) == 1 {
 		rs := resolved[0]
 		if rs.session == nil {
-			out, err := runLocalCommand(rs.cmd, nil)
-			if err == nil && len(out) > 0 {
-				os.Stdout.Write(out)
-			}
+			_, err := runLocalCommand(rs.cmd, nil, false)
 			return err
 		}
 		return executeSimpleBeta(rs.session, rs.cmd, nil)
 	}
 
 	var prevOutput []byte
-	for _, rs := range resolved {
+	for i, rs := range resolved {
+		isLast := (i == len(resolved)-1)
 		if rs.session == nil {
-			out, err := runLocalCommand(rs.cmd, prevOutput)
+			out, err := runLocalCommand(rs.cmd, prevOutput, !isLast)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Alpha stage error: %v\n", err)
 				return err
 			}
 			prevOutput = out
 		} else {
-			out, err := executeBetaCapture(rs.session, rs.cmd, prevOutput)
-			if err != nil {
-				return err
+			if isLast {
+				err := executeSimpleBeta(rs.session, rs.cmd, prevOutput)
+				if err != nil {
+					return err
+				}
+			} else {
+				out, err := executeBetaCapture(rs.session, rs.cmd, prevOutput)
+				if err != nil {
+					return err
+				}
+				prevOutput = out
 			}
-			prevOutput = out
 		}
-	}
-
-	if len(prevOutput) > 0 {
-		os.Stdout.Write(prevOutput)
 	}
 	return nil
 }
@@ -203,14 +343,9 @@ func (a *Alpha) resolveStageTarget(target string) (*BetaSession, error) {
 }
 
 func executeSimpleBeta(session *BetaSession, cmd string, stdin []byte) error {
-	var stdinStr string
-	if len(stdin) > 0 {
-		stdinStr = string(stdin)
-	}
-
 	if err := session.Send(protocol.NewMessage(protocol.MsgExec, &protocol.ExecPayload{
 		Cmd:   cmd,
-		Stdin: stdinStr,
+		Stdin: stdin,
 	})); err != nil {
 		return fmt.Errorf("send exec: %w", err)
 	}
@@ -248,14 +383,9 @@ func executeSimpleBeta(session *BetaSession, cmd string, stdin []byte) error {
 }
 
 func executeBetaCapture(session *BetaSession, cmd string, stdin []byte) ([]byte, error) {
-	var stdinStr string
-	if len(stdin) > 0 {
-		stdinStr = string(stdin)
-	}
-
 	if err := session.Send(protocol.NewMessage(protocol.MsgExec, &protocol.ExecPayload{
 		Cmd:   cmd,
-		Stdin: stdinStr,
+		Stdin: stdin,
 	})); err != nil {
 		return nil, fmt.Errorf("send exec: %w", err)
 	}
@@ -293,13 +423,19 @@ func executeBetaCapture(session *BetaSession, cmd string, stdin []byte) ([]byte,
 	}
 }
 
-func runLocalCommand(cmd string, stdin []byte) ([]byte, error) {
+func runLocalCommand(cmd string, stdin []byte, captureOutput bool) ([]byte, error) {
 	var command *exec.Cmd
 	if len(stdin) > 0 {
 		command = exec.Command(Shell(), "-c", cmd)
 		command.Stdin = bytes.NewReader(stdin)
 	} else {
 		command = exec.Command(Shell(), "-c", cmd)
+	}
+	if !captureOutput {
+		command.Stdout = os.Stdout
+		command.Stderr = os.Stderr
+		err := command.Run()
+		return nil, err
 	}
 	return command.Output()
 }
@@ -310,4 +446,24 @@ func Shell() string {
 		return sh
 	}
 	return "sh"
+}
+
+func parseIPPrefix(s string) (string, string, bool) {
+	maxLen := 45
+	if len(s) < maxLen {
+		maxLen = len(s)
+	}
+	for i := maxLen; i >= 4; i-- {
+		prefix := s[:i]
+		if net.ParseIP(prefix) != nil {
+			if i == len(s) {
+				return prefix, "", true
+			}
+			next := s[i]
+			if next == ' ' || next == '/' || next == ':' || next == '\t' || next == '\n' || next == '\r' {
+				return prefix, s[i:], true
+			}
+		}
+	}
+	return "", "", false
 }

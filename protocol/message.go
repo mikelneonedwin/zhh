@@ -23,6 +23,8 @@ const (
 	MsgWhoami       = "whoami"
 	MsgWhoamiResp   = "whoami_resp"
 	MsgHeartbeat    = "heartbeat"
+	MsgRenreg       = "renreg"
+	MsgRenregResp   = "renreg_resp"
 	MsgError        = "error"
 )
 
@@ -43,7 +45,7 @@ type IdentifyPayload struct {
 
 type ExecPayload struct {
 	Cmd   string `json:"cmd"`
-	Stdin string `json:"stdin,omitempty"`
+	Stdin []byte `json:"stdin,omitempty"`
 }
 
 type ExecOutputPayload struct {
@@ -106,6 +108,16 @@ type WhoamiRespPayload struct {
 	Battery  string `json:"battery"`
 	Shell    string `json:"shell"`
 	Cwd      string `json:"cwd"`
+}
+
+type RenregPayload struct {
+	Dir         string `json:"dir"`
+	Pattern     string `json:"pattern"`
+	Replacement string `json:"replacement"`
+}
+
+type RenregRespPayload struct {
+	Renamed []string `json:"renamed"`
 }
 
 type ErrorPayload struct {

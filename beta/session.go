@@ -64,20 +64,28 @@ func (s *Session) HandleCD(cmd string) (string, error) {
 	defer s.mu.Unlock()
 
 	cmd = strings.TrimSpace(cmd)
-	parts := strings.Fields(cmd)
-	if len(parts) == 0 {
-		return s.Cwd, nil
-	}
 
 	var target string
-	if len(parts) == 1 {
+	if cmd == "cd" || cmd == "chdir" {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return s.Cwd, err
 		}
 		target = home
+	} else if strings.HasPrefix(cmd, "cd ") {
+		target = strings.TrimSpace(cmd[3:])
+	} else if strings.HasPrefix(cmd, "chdir ") {
+		target = strings.TrimSpace(cmd[6:])
+	} else if runtime.GOOS == "windows" && strings.HasPrefix(cmd, "cd/") {
+		target = strings.TrimSpace(cmd[2:])
+	} else if runtime.GOOS == "windows" && strings.HasPrefix(cmd, "chdir/") {
+		target = strings.TrimSpace(cmd[5:])
 	} else {
-		target = parts[len(parts)-1]
+		return s.Cwd, nil
+	}
+
+	if len(target) >= 2 && ((target[0] == '"' && target[len(target)-1] == '"') || (target[0] == '\'' && target[len(target)-1] == '\'')) {
+		target = target[1 : len(target)-1]
 	}
 
 	if strings.HasPrefix(target, "~") {

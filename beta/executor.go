@@ -8,18 +8,7 @@ import (
 	"strings"
 )
 
-func buildCommand(shell, cmd string) (*exec.Cmd, error) {
-	switch shell {
-	case "cmd":
-		return exec.Command("cmd", "/c", cmd), nil
-	case "powershell":
-		return exec.Command("powershell", "-NoProfile", "-Command", cmd), nil
-	case "pwsh":
-		return exec.Command("pwsh", "-NoProfile", "-Command", cmd), nil
-	default:
-		return exec.Command(shell, "-c", cmd), nil
-	}
-}
+
 
 func isCDCommand(cmd string) bool {
 	trimmed := strings.TrimSpace(cmd)
@@ -37,7 +26,7 @@ func isCDCommand(cmd string) bool {
 	return false
 }
 
-func (s *Session) HandleExec(cmd, stdin string, onStdout func([]byte), onStderr func([]byte)) (int, string, error) {
+func (s *Session) HandleExec(cmd string, stdin []byte, onStdout func([]byte), onStderr func([]byte)) (int, string, error) {
 	trimmed := strings.TrimSpace(cmd)
 	if isCDCommand(trimmed) {
 		newCwd, err := s.HandleCD(trimmed)
@@ -59,71 +48,9 @@ func (s *Session) HandleExec(cmd, stdin string, onStdout func([]byte), onStderr 
 	}
 	command.Dir = cwd
 
-	if stdin != "" {
-		command.Stdin = strings.NewReader(stdin)
-	}
-
-	stdout, err := command.StdoutPipe()
+	code, err := runCommandPlatform(command, stdin, onStdout, onStderr)
 	if err != nil {
-		return -1, cwd, fmt.Errorf("stdout pipe: %w", err)
-	}
-	stderr, err := command.StderrPipe()
-	if err != nil {
-		return -1, cwd, fmt.Errorf("stderr pipe: %w", err)
-	}
-
-	if err := command.Start(); err != nil {
-		return -1, cwd, fmt.Errorf("start: %w", err)
-	}
-
-	stdoutDone := make(chan struct{})
-	go func() {
-		buf := make([]byte, 32768)
-		for {
-			n, err := stdout.Read(buf)
-			if n > 0 {
-				data := make([]byte, n)
-				copy(data, buf[:n])
-				if onStdout != nil {
-					onStdout(data)
-				}
-			}
-			if err != nil {
-				break
-			}
-		}
-		close(stdoutDone)
-	}()
-
-	stderrDone := make(chan struct{})
-	go func() {
-		buf := make([]byte, 32768)
-		for {
-			n, err := stderr.Read(buf)
-			if n > 0 {
-				data := make([]byte, n)
-				copy(data, buf[:n])
-				if onStderr != nil {
-					onStderr(data)
-				}
-			}
-			if err != nil {
-				break
-			}
-		}
-		close(stderrDone)
-	}()
-
-	<-stdoutDone
-	<-stderrDone
-
-	code := 0
-	if err := command.Wait(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			code = exitErr.ExitCode()
-		} else {
-			code = -1
-		}
+		return -1, cwd, err
 	}
 
 	newCwd := s.GetCwd()

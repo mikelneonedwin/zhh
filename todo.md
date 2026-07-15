@@ -1,0 +1,3 @@
+- Release
+- Install script
+- Update pipeline

@@ -3,6 +3,8 @@ package discovery
 import (
 	"context"
 	"fmt"
+	"io"
+	"log"
 	"net"
 	"strconv"
 	"strings"
@@ -54,7 +56,11 @@ func Discover(ctx context.Context, targetOctet int) ([]BetaInfo, error) {
 
 	entries := make(chan *mdns.ServiceEntry, 50)
 
+	var processWg sync.WaitGroup
+	processWg.Add(1)
+
 	go func() {
+		defer processWg.Done()
 		for entry := range entries {
 			beta := BetaInfo{
 				Hostname: entry.Host,
@@ -86,20 +92,56 @@ func Discover(ctx context.Context, targetOctet int) ([]BetaInfo, error) {
 		}
 	}()
 
-	params := &mdns.QueryParam{
-		Service:   ServiceName,
-		Domain:    "local",
-		Timeout:   time.Second * 3,
-		Entries:   entries,
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		close(entries)
+		processWg.Wait()
+		return nil, fmt.Errorf("list interfaces: %w", err)
 	}
 
-	if err := mdns.Query(params); err != nil {
-		close(entries)
-		return nil, fmt.Errorf("mDNS query: %w", err)
+	var wg sync.WaitGroup
+
+	// Suppress standard log output to hide mDNS [INFO] logs
+	oldLog := log.Writer()
+	log.SetOutput(io.Discard)
+	defer log.SetOutput(oldLog)
+
+	for _, iface := range ifaces {
+		if (iface.Flags&net.FlagUp) == 0 || (iface.Flags&net.FlagMulticast) == 0 {
+			continue
+		}
+		ifc := iface
+		wg.Add(1)
+		go func(i *net.Interface) {
+			defer wg.Done()
+			params := &mdns.QueryParam{
+				Service:   ServiceName,
+				Domain:    "local",
+				Timeout:   time.Second * 3,
+				Entries:   entries,
+				Interface: i,
+			}
+			mdns.Query(params)
+		}(&ifc)
 	}
+
+	wg.Wait()
+	log.SetOutput(oldLog) // restore as soon as mdns.Query calls are done
+
 	close(entries)
+	processWg.Wait()
 
 	mu.Lock()
 	defer mu.Unlock()
-	return betas, nil
+
+	dedup := make([]BetaInfo, 0, len(betas))
+	seen := make(map[string]bool)
+	for _, b := range betas {
+		key := fmt.Sprintf("%s:%s:%d", b.Hostname, b.IP, b.Port)
+		if !seen[key] {
+			seen[key] = true
+			dedup = append(dedup, b)
+		}
+	}
+	return dedup, nil
 }

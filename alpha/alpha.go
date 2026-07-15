@@ -1,7 +1,6 @@
 package alpha
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chzyer/readline"
 	"zhh/discovery"
 	"zhh/protocol"
 )
@@ -62,25 +62,65 @@ func (s *BetaSession) ReadWithTimeout(timeout time.Duration) (*protocol.Message,
 
 var (
 	deviceColors = []string{
-		"\033[31m", "\033[32m", "\033[33m", "\033[34m",
-		"\033[35m", "\033[36m", "\033[91m", "\033[92m",
-		"\033[93m", "\033[94m", "\033[95m", "\033[96m",
+		"\033[1;32m", // Bold Green
+		"\033[1;36m", // Bold Cyan
+		"\033[1;33m", // Bold Yellow
+		"\033[1;91m", // Bold Bright Red
+		"\033[1;92m", // Bold Bright Green
+		"\033[1;93m", // Bold Bright Yellow
+		"\033[1;95m", // Bold Bright Magenta
+		"\033[1;96m", // Bold Bright Cyan
+		"\033[1;31m", // Bold Red
+		"\033[92m",   // Bright Green
+		"\033[96m",   // Bright Cyan
+		"\033[93m",   // Bright Yellow
+		"\033[95m",   // Bright Magenta
+		"\033[91m",   // Bright Red
+		"\033[32m",   // Green
+		"\033[36m",   // Cyan
+		"\033[33m",   // Yellow
 	}
-	resetCode = "\033[0m"
+	resetCode      = "\033[0m"
+	assignedColors = make(map[string]string)
+	colorMutex     sync.Mutex
 )
 
 func getDeviceColor(spec string) string {
 	if spec == "" || spec == "active" {
 		return ""
 	}
+
+	colorMutex.Lock()
+	defer colorMutex.Unlock()
+
+	if color, ok := assignedColors[spec]; ok {
+		return color
+	}
+
+	// Find the first color that is not currently assigned
+	used := make(map[string]bool)
+	for _, c := range assignedColors {
+		used[c] = true
+	}
+
+	for _, c := range deviceColors {
+		if !used[c] {
+			assignedColors[spec] = c
+			return c
+		}
+	}
+
+	// Fallback hashing if we run out of colors (approx 200)
 	h := 0
-	for _, c := range spec {
-		h = h*31 + int(c)
+	for _, char := range spec {
+		h = h*31 + int(char)
 	}
 	if h < 0 {
 		h = -h
 	}
-	return deviceColors[h%len(deviceColors)]
+	c := deviceColors[h%len(deviceColors)]
+	assignedColors[spec] = c
+	return c
 }
 
 type Alpha struct {
@@ -202,6 +242,21 @@ func (a *Alpha) ResolveDevice(spec string) (*BetaSession, error) {
 		return nil, fmt.Errorf("empty device spec")
 	}
 
+	if net.ParseIP(spec) != nil {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		for _, s := range a.sessions {
+			remoteIP := s.Conn.RemoteAddr().String()
+			if host, _, err := net.SplitHostPort(remoteIP); err == nil {
+				remoteIP = host
+			}
+			if remoteIP == spec {
+				return s, nil
+			}
+		}
+		return nil, fmt.Errorf("no device with IP %s", spec)
+	}
+
 	switch spec {
 	case "alpha", "a", "1":
 		return nil, nil
@@ -267,26 +322,43 @@ func Run(target, command string) {
 
 	// Discover betas
 	var targetOctet int
+	var targetIP string
+
 	if target != "" {
-		targetOctet, _ = strconv.Atoi(target)
+		if net.ParseIP(target) != nil {
+			targetIP = target
+		} else {
+			targetOctet, _ = strconv.Atoi(target)
+		}
 	}
 
-	log.Printf("Discovering betas on network...")
-	betas, err := discovery.Discover(nil, targetOctet)
-	if err != nil {
-		log.Fatalf("Discovery failed: %v", err)
-	}
-	if len(betas) == 0 {
-		if targetOctet > 0 {
-			log.Fatalf("No beta found with octet %d", targetOctet)
-		}
-		log.Printf("No betas discovered via mDNS. Waiting 3 more seconds...")
+	var betas []discovery.BetaInfo
+
+	if targetIP != "" {
+		betas = []discovery.BetaInfo{{
+			Hostname: "Direct",
+			IP:       targetIP,
+			Port:     9999,
+		}}
+	} else {
+		log.Printf("Discovering betas on network...")
+		var err error
 		betas, err = discovery.Discover(nil, targetOctet)
 		if err != nil {
 			log.Fatalf("Discovery failed: %v", err)
 		}
 		if len(betas) == 0 {
-			log.Fatalf("No betas found on network")
+			if targetOctet > 0 {
+				log.Fatalf("No beta found with octet %d", targetOctet)
+			}
+			log.Printf("No betas discovered via mDNS. Waiting 3 more seconds...")
+			betas, err = discovery.Discover(nil, targetOctet)
+			if err != nil {
+				log.Fatalf("Discovery failed: %v", err)
+			}
+			if len(betas) == 0 {
+				log.Fatalf("No betas found on network")
+			}
 		}
 	}
 
@@ -382,11 +454,23 @@ func RunSingleCommand(alpha *Alpha, command string) {
 }
 
 func runInteractive(alpha *Alpha) {
-	reader := bufio.NewReader(os.Stdin)
 	fmt.Println()
 	fmt.Println("  zhh alpha interactive mode")
 	fmt.Println("  Type @help for available commands")
 	fmt.Println()
+
+	rl, err := readline.NewEx(&readline.Config{
+		Prompt:          "> ",
+		HistoryFile:     "/tmp/zhh_history",
+		InterruptPrompt: "^C",
+		EOFPrompt:       "exit",
+		Painter:         &pipelinePainter{},
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "readline init error: %v\n", err)
+		return
+	}
+	defer rl.Close()
 
 	for {
 		session := alpha.ActiveSession()
@@ -395,12 +479,25 @@ func runInteractive(alpha *Alpha) {
 			return
 		}
 
-		prompt := fmt.Sprintf("%s@%s:%s$ ", session.Hostname, session.Shell, session.Cwd)
-		fmt.Print(prompt)
+		prompt := fmt.Sprintf("\033[1;32m%s@%s\033[0m:\033[1;34m%s\033[0m$ ",
+			session.Hostname, session.Shell, session.Cwd)
+		rl.SetPrompt(prompt)
 
-		line, err := reader.ReadString('\n')
+		line, err := rl.Readline()
 		if err != nil {
-			if err != io.EOF {
+			if err == readline.ErrInterrupt {
+				if len(line) == 0 {
+					if alpha.handleShellExit(session) {
+						session = alpha.ActiveSession()
+						if session == nil {
+							return
+						}
+					}
+					continue
+				} else {
+					continue
+				}
+			} else if err != io.EOF {
 				fmt.Fprintf(os.Stderr, "Read error: %v\n", err)
 			}
 			break
@@ -417,6 +514,8 @@ func runInteractive(alpha *Alpha) {
 			}
 			continue
 		}
+
+
 
 		if strings.HasPrefix(line, "#") {
 			if err := handleShellCommand(session, line); err != nil {
@@ -441,8 +540,47 @@ func runInteractive(alpha *Alpha) {
 	}
 }
 
+func parseCommandLine(line string) []string {
+	var args []string
+	var arg []rune
+	inQuote := false
+	var quoteChar rune
+	inArg := false
+
+	runes := []rune(line)
+	for i := 0; i < len(runes); i++ {
+		c := runes[i]
+		if inQuote {
+			if c == quoteChar {
+				inQuote = false
+			} else {
+				arg = append(arg, c)
+			}
+		} else {
+			if c == '\'' || c == '"' {
+				inQuote = true
+				quoteChar = c
+				inArg = true
+			} else if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+				if inArg {
+					args = append(args, string(arg))
+					arg = nil
+					inArg = false
+				}
+			} else {
+				arg = append(arg, c)
+				inArg = true
+			}
+		}
+	}
+	if inArg {
+		args = append(args, string(arg))
+	}
+	return args
+}
+
 func handleMetaCommand(alpha *Alpha, line string) error {
-	parts := strings.Fields(line)
+	parts := parseCommandLine(line)
 	cmd := parts[0]
 
 	switch cmd {
@@ -472,6 +610,19 @@ func handleMetaCommand(alpha *Alpha, line string) error {
 			return err
 		}
 		return handleFileTransfer(alpha, srcDev, srcPath, dstDev, dstPath, true)
+	case "@clear", "@cls":
+		fmt.Print("\033[H\033[2J")
+		return nil
+	case "@renreg":
+		if len(parts) < 2 {
+			return fmt.Errorf("usage: @renreg <pattern> [replacement]")
+		}
+		pattern := parts[1]
+		replacement := ""
+		if len(parts) >= 3 {
+			replacement = parts[2]
+		}
+		return handleRenregMeta(alpha, pattern, replacement)
 	case "@help":
 		return handleHelp()
 	case "@exit", "@quit":
@@ -480,6 +631,49 @@ func handleMetaCommand(alpha *Alpha, line string) error {
 		return fmt.Errorf("unknown command: %s (try @help)", cmd)
 	}
 	return nil
+}
+
+func handleRenregMeta(alpha *Alpha, pattern, replacement string) error {
+	session := alpha.ActiveSession()
+	if session == nil {
+		return fmt.Errorf("no active session")
+	}
+
+	if err := session.Send(protocol.NewMessage(protocol.MsgRenreg, &protocol.RenregPayload{
+		Dir:         session.Cwd,
+		Pattern:     pattern,
+		Replacement: replacement,
+	})); err != nil {
+		return fmt.Errorf("send renreg: %w", err)
+	}
+
+	msg, err := session.Read()
+	if err != nil {
+		return fmt.Errorf("read: %w", err)
+	}
+
+	switch msg.Type {
+	case protocol.MsgRenregResp:
+		var p protocol.RenregRespPayload
+		if msg.Payload != nil {
+			json.Unmarshal(msg.Payload, &p)
+		}
+		if len(p.Renamed) == 0 {
+			fmt.Println("No files matched the pattern.")
+		} else {
+			fmt.Printf("Renamed %d files:\n", len(p.Renamed))
+			for _, r := range p.Renamed {
+				fmt.Printf("  %s\n", r)
+			}
+		}
+		return nil
+	case protocol.MsgError:
+		var p protocol.ErrorPayload
+		json.Unmarshal(msg.Payload, &p)
+		return fmt.Errorf("beta error: %s", p.Message)
+	default:
+		return fmt.Errorf("unexpected response: %s", msg.Type)
+	}
 }
 
 func handleSwitch(alpha *Alpha, target string) error {
@@ -506,17 +700,10 @@ func handleSwitch(alpha *Alpha, target string) error {
 		fmt.Printf("  %s[%d]  %s@%s  (octet %d, %s)\n",
 			marker, s.ID, s.Hostname, s.Shell, s.Octet, s.OS)
 	}
-	fmt.Printf("  Active: %d\n", active.ID)
-	fmt.Print("  Switch to device number (or Enter to cancel): ")
-
-	reader := bufio.NewReader(os.Stdin)
-	line, _ := reader.ReadString('\n')
-	line = strings.TrimSpace(line)
-	if line == "" {
-		return nil
+	if active != nil {
+		fmt.Printf("  Active: %d\n", active.ID)
 	}
-
-	return switchToTarget(alpha, line)
+	return nil
 }
 
 func switchToTarget(alpha *Alpha, spec string) error {
@@ -557,6 +744,7 @@ func handleWhoami(alpha *Alpha) error {
 				json.Unmarshal(msg.Payload, &p)
 			}
 			fmt.Println()
+			fmt.Printf("  ID:         %d\n", session.ID)
 			fmt.Printf("  User:       %s\n", p.User)
 			fmt.Printf("  Hostname:   %s\n", p.Hostname)
 			fmt.Printf("  IP:         %s\n", p.IP)
@@ -672,6 +860,8 @@ func handleHelp() error {
 	fmt.Println("    @copy <src> <dst> Alias for @cp")
 	fmt.Println("    @mv <src> <dst>   Move file between devices")
 	fmt.Println("    @move <src> <dst> Alias for @mv")
+	fmt.Println("    @clear / @cls     Clear the alpha terminal")
+	fmt.Println("    @renreg <pat> <rep> Batch rename files using regex")
 	fmt.Println("    @help             Show this help")
 	fmt.Println("    @exit / @quit     Exit")
 	fmt.Println()

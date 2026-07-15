@@ -55,6 +55,13 @@ func splitDevicePathArg(arg string) (dev, path string) {
 
 	rest := arg[1:]
 
+	if ip, pathRest, ok := parseIPPrefix(rest); ok {
+		pathRest = strings.TrimSpace(pathRest)
+		pathRest = strings.TrimPrefix(pathRest, ":")
+		pathRest = strings.TrimSpace(pathRest)
+		return "$" + ip, pathRest
+	}
+
 	if strings.HasPrefix(rest, ".") {
 		rest = rest[1:]
 		numStr := extractDigits(rest)

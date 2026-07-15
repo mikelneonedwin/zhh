@@ -12,8 +12,11 @@ zhh
 # On the controller machine (alpha mode)
 zhh alpha
 
-# Connect to a specific beta by its last IP octet
+# Connect to a specific beta by its last IP octet (mDNS discovery)
 zhh alpha 42
+
+# Connect to a specific beta directly by its IP address
+zhh alpha 192.168.1.50
 
 # Run a single command and exit
 zhh a 42 - rmdir /s /q \mydir
@@ -36,6 +39,15 @@ an alpha client to `127.0.0.1`. It's the same protocol as a real remote session
 but runs locally — useful for testing, scripting, or when no other machines
 are available.
 
+## Features
+
+- **Interactive Shell Editor:** Built on `readline` with full support for cursor navigation (left/right arrows), command history (up/down arrows), and persistent shell history.
+- **Graceful Interrupts:** Hitting `Ctrl+C` on an empty prompt pops the active shell or disconnects the session (exactly like `exit`), rather than killing the terminal.
+- **Pseudo-Terminal (PTY) Execution:** Commands on Unix-like beta servers run inside a PTY master. Visual output (such as columns, grids, and colors in `ls` or `grep`) matches native terminals perfectly.
+- **Classic Bash Prompt:** Features a classic, high-visibility Bash-style prompt (bold green device/shell and bold blue directory path).
+- **Persistent Pipeline Colorization:** Automatically assigns permanent, unique, bright ANSI colors to devices to keep complex cross-machine pipelines easily readable on dark terminals.
+- **Direct IP Connections:** Connect straight to a machine by its IP (IPv4/IPv6), bypassing mDNS lookup.
+
 ## Device Addressing
 
 | Syntax | Resolves to |
@@ -45,6 +57,7 @@ are available.
 | `3`, `4`, ... | Nth beta by connection order |
 | `42`, `123` | Beta whose IP ends with that octet |
 | `.42` | Explicit octet lookup |
+| `192.168.1.50` / `fe80::1` | Beta with that specific IP address |
 
 ## Interactive Commands
 
@@ -53,9 +66,11 @@ are available.
 | `@switch` | List connected betas |
 | `@switch 2` | Switch to beta with ID 2 (or octet 2) |
 | `@switch .2` | Switch to beta with octet 2 |
-| `@cp <src> <dst>` | Copy file between devices |
-| `@mv <src> <dst>` | Move file between devices |
-| `@whoami` | Show active beta system info |
+| `@cp <src> <dst>` | Copy file between devices (supports quotes and spaces) |
+| `@mv <src> <dst>` | Move file between devices (supports quotes and spaces) |
+| `@renreg <pat> [rep]`| Batch rename files in active directory using regex |
+| `@clear` / `@cls` | Clear the alpha terminal |
+| `@whoami` | Show active beta system info (clean IP without port) |
 | `@help` | Show available commands |
 | `@exit` / `@quit` | Exit alpha mode |
 | `#` | List available shells on active beta |
@@ -79,8 +94,7 @@ Use `$` alone to run a stage on the alpha (controller):
 ipconfig | $grep 192 | clip
 ```
 
-Each stage gets a unique colour based on its target device, so you can
-visually track which commands run where.
+Each stage gets colorized in real time as you type (highlighting targets using their device-specific colors) and runs concurrently.
 
 ## File Transfer Syntax
 

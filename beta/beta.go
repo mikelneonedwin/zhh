@@ -95,13 +95,18 @@ func handleConnection(conn net.Conn, hostname string, octet int) {
 
 	session := NewSession()
 
+	ip := conn.LocalAddr().String()
+	if host, _, err := net.SplitHostPort(ip); err == nil {
+		ip = host
+	}
+
 	ident := protocol.NewMessage(protocol.MsgIdentify, &protocol.IdentifyPayload{
 		Hostname: hostname,
 		OS:       runtime.GOOS,
 		Version:  getOSVersion(),
 		Shells:   session.Shells,
 		Octet:    octet,
-		IP:       conn.LocalAddr().String(),
+		IP:       ip,
 		Cwd:      session.GetCwd(),
 	})
 	if err := protocol.WriteMessage(conn, ident); err != nil {
@@ -152,9 +157,29 @@ func handleMessage(conn net.Conn, session *Session, msg *protocol.Message) error
 		return handleWhoami(conn, session)
 	case protocol.MsgHeartbeat:
 		return nil
+	case protocol.MsgRenreg:
+		return handleRenreg(conn, msg)
 	default:
 		return fmt.Errorf("unknown message type: %s", msg.Type)
 	}
+}
+
+func handleRenreg(conn net.Conn, msg *protocol.Message) error {
+	var payload protocol.RenregPayload
+	if msg.Payload != nil {
+		if err := protocol.DecodePayload(msg.Payload, &payload); err != nil {
+			return err
+		}
+	}
+
+	renamed, err := protocol.PerformRenreg(payload.Dir, payload.Pattern, payload.Replacement)
+	if err != nil {
+		return err
+	}
+
+	return protocol.WriteMessage(conn, protocol.NewMessage(protocol.MsgRenregResp, &protocol.RenregRespPayload{
+		Renamed: renamed,
+	}))
 }
 
 func handleExec(conn net.Conn, session *Session, msg *protocol.Message) error {
@@ -375,10 +400,15 @@ func handleWhoami(conn net.Conn, session *Session) error {
 	storage := getStorageInfo()
 	battery := getBatteryInfo()
 
+	ip := conn.LocalAddr().String()
+	if host, _, err := net.SplitHostPort(ip); err == nil {
+		ip = host
+	}
+
 	return protocol.WriteMessage(conn, protocol.NewMessage(protocol.MsgWhoamiResp, &protocol.WhoamiRespPayload{
 		User:     user,
 		Hostname: hostname,
-		IP:       conn.LocalAddr().String(),
+		IP:       ip,
 		OS:       runtime.GOOS,
 		Version:  getOSVersion(),
 		Storage:  storage,
