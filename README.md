@@ -126,7 +126,7 @@ default shell (bash)  →  #dash  →  #sh  →  exit  →  exit  →  exit
 ## Build from Source
 
 ```bash
-git clone -b develop https://github.com/mikelneonedwin/zhh
+git clone https://github.com/mikelneonedwin/zhh
 cd zhh
 go build -o zhh .
 ```
